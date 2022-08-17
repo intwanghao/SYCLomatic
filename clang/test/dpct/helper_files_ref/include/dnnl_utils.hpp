@@ -523,7 +523,7 @@ class engine_ext {
 
   template <bool use_attr, typename primitive_type, typename attr_type,
             typename... args_type>
-  primitive_type engine_ext::create_forward_primitive(attr_type &&attr,
+  primitive_type create_forward_primitive(attr_type &&attr,
                                                       args_type &&...args);
 
   template <typename primitive_type, typename... args_type>
@@ -533,20 +533,20 @@ class engine_ext {
   template <bool use_attr, typename primitive_type, typename attr_type,
             typename... args_type>
   typename primitive_type::primitive_desc
-  engine_ext::create_forward_primitive_desc(attr_type &&attr,
+  create_forward_primitive_desc(attr_type &&attr,
                                             args_type &&...args);
 
   template <typename primitive_type, typename forward_primitive_type,
             typename... args_type>
   primitive_type
-  engine_ext::create_backward_primitive(forward_primitive_type &&fp,
+  create_backward_primitive(forward_primitive_type &&fp,
                                         args_type &&...args);
 
-  bool engine_ext::scale_parameter_preprocess(
+  bool scale_parameter_preprocess(
       std::vector<std::tuple<float, float, memory_desc_ext, void *>> args);
 
   template <typename primitive_type, typename args_type>
-  sycl::event engine_ext::execute_primitive(
+  sycl::event execute_primitive(
       primitive_type &&primitive, args_type &&args,
       std::vector<std::tuple<float, float, int, memory_desc_ext, void *>>
           extra_args);
