@@ -669,6 +669,13 @@ class engine_ext {
       return weight_desc.get_desc();
     }
     auto help_weight_desc = weight_desc.get_desc();
+    int ndims = help_weight_desc.data.ndims;
+    unsigned block_size =
+        help_weight_desc.data.format_desc.blocking.inner_blks[0];
+    if (block_size) {
+      throw std::runtime_error("get_group_weight_desc: group convolution with "
+                               "blocked weight tensor unimplemented.");
+    }
     std::vector<int64_t> new_size;
     auto old_size = weight_desc.get_desc().dims();
     new_size.push_back(group_count);
@@ -676,15 +683,28 @@ class engine_ext {
     for (int index = 1; index < old_size.size(); index++) {
       new_size.push_back(old_size[index]);
     }
-    if (old_size.size() == 4) {
-      help_weight_desc =
-          ::dnnl::memory::desc(new_size, weight_desc.get_desc().data_type(),
-                               ::dnnl::memory::format_tag::goihw);
-    } else {
-      help_weight_desc =
-          ::dnnl::memory::desc(new_size, weight_desc.get_desc().data_type(),
-                               ::dnnl::memory::format_tag::goidhw);
+    std::vector<int64_t> strides(
+        help_weight_desc.data.format_desc.blocking.strides,
+        help_weight_desc.data.format_desc.blocking.strides + ndims);
+    ::dnnl::memory::format_tag tag;
+    bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
+    if (block_size == 4) {
+      if (ndims == 4) {
+        if (is_nhwc) {
+          tag = ::dnnl::memory::format_tag::gohwi;
+        } else {
+          tag = ::dnnl::memory::format_tag::goihw;
+        }
+      } else if (ndims == 5) {
+        if (is_nhwc) {
+          tag = ::dnnl::memory::format_tag::godhwi;
+        } else {
+          tag = ::dnnl::memory::format_tag::goidhw;
+        }
+      }
     }
+    help_weight_desc =
+        ::dnnl::memory::desc(new_size, weight_desc.get_desc().data_type(), tag);
     return help_weight_desc;
   }
   static ::dnnl::primitive_attr generate_scaling_attr(float alpha, float beta);
@@ -1324,12 +1344,11 @@ engine_ext::compress_spatial_dimensions_to_channel(::dnnl::memory::desc desc) {
     compressed_dims[1] = compressed_dims[1] * desc.data.dims[index];
     compressed_dims[index] = 1;
   }
-  if (ndims == 5) {
-    return ::dnnl::memory::desc(compressed_dims, desc.data_type(),
-                                ::dnnl::memory::format_tag::ncdhw);
-  }
+  std::vector<int64_t> strides(ndims, 1);
+  strides[0] = compressed_dims[1];
+
   return ::dnnl::memory::desc(compressed_dims, desc.data_type(),
-                              ::dnnl::memory::format_tag::nchw);
+                              strides);
 }
 
 ::dnnl::memory::desc
