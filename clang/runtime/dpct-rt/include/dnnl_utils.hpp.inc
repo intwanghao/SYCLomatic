@@ -1309,7 +1309,7 @@ void memory_desc_ext::get(int requested_ndims, dpct::library_data_t *dt,
 // DPCT_CODE
 void *engine_ext::allocate(const memory_desc_ext &data_desc, int count) const {
   size_t mem_size = data_desc.get_size();
-  void *mem = cl::sycl::malloc_device(mem_size * count, *_q);
+  void *mem = sycl::malloc_device(mem_size * count, *_q);
   return mem;
 }
 
@@ -1885,21 +1885,17 @@ sycl::event engine_ext::softmax_forward(softmax_algorithm alg,
   std::unordered_map<int, ::dnnl::memory> execution_args = {
       {DNNL_ARG_SRC, {::dnnl::memory(help_src_desc, _eng, src)}}};
 
-  if (alg == softmax_algorithm::normal) {
-    auto primitive = create_forward_primitive<::dnnl::softmax_forward>(
-        ::dnnl::prop_kind::forward, help_src_desc, 1);
-
-    return execute_primitive(
-        primitive, execution_args,
-        {{alpha, beta, DNNL_ARG_DST, memory_desc_ext(help_dst_desc), dst}});
-  } else {
-    auto primitive = create_forward_primitive<::dnnl::logsoftmax_forward>(
-        ::dnnl::prop_kind::forward, help_src_desc, 1);
-
-    return execute_primitive(
-        primitive, execution_args,
-        {{alpha, beta, DNNL_ARG_DST, memory_desc_ext(help_dst_desc), dst}});
+  ::dnnl::algorithm softmax_alg = ::dnnl::algorithm::softmax_accurate;
+  if (alg == softmax_algorithm::log) {
+    softmax_alg = ::dnnl::algorithm::softmax_log;
   }
+  auto primitive = create_forward_primitive<::dnnl::softmax_v2_forward>(
+      ::dnnl::prop_kind::forward, softmax_alg, help_src_desc, 
+      help_dst_desc, 1);
+
+  return execute_primitive(
+      primitive, execution_args,
+      {{alpha, beta, DNNL_ARG_DST, memory_desc_ext(help_dst_desc), dst}});
 }
 // DPCT_LABEL_END
 
@@ -1932,23 +1928,19 @@ sycl::event engine_ext::softmax_backward(
       {DNNL_ARG_DIFF_DST,
        {::dnnl::memory(help_diff_dst_desc, _eng, diff_dst)}}};
 
-  if (alg == softmax_algorithm::normal) {
-    auto primitive = create_backward_primitive<::dnnl::softmax_backward>(
-        create_forward_primitive_desc<::dnnl::softmax_forward>(
-            ::dnnl::prop_kind::forward, help_diff_src_desc, 1),
-        help_diff_src_desc, help_diff_src_desc, 1);
-    return execute_primitive(primitive, execution_args,
-                             {{alpha, beta, DNNL_ARG_DIFF_SRC,
-                               memory_desc_ext(help_diff_src_desc), diff_src}});
-  } else {
-    auto primitive = create_backward_primitive<::dnnl::logsoftmax_backward>(
-        create_forward_primitive_desc<::dnnl::logsoftmax_forward>(
-            ::dnnl::prop_kind::forward, help_diff_src_desc, 1),
-        help_diff_src_desc, help_diff_src_desc, 1);
-    return execute_primitive(primitive, execution_args,
-                             {{alpha, beta, DNNL_ARG_DIFF_SRC,
-                               memory_desc_ext(help_diff_src_desc), diff_src}});
+  ::dnnl::algorithm softmax_alg = ::dnnl::algorithm::softmax_accurate;
+  if (alg == softmax_algorithm::log) {
+    softmax_alg = ::dnnl::algorithm::softmax_log;
   }
+
+  auto primitive = create_backward_primitive<::dnnl::softmax_v2_backward>(
+      create_forward_primitive_desc<::dnnl::softmax_v2_forward>(
+          ::dnnl::prop_kind::forward, softmax_alg, help_diff_src_desc, 
+          help_dst_desc, 1),
+      softmax_alg, help_diff_src_desc, help_diff_dst_desc, help_dst_desc, 1);
+  return execute_primitive(primitive, execution_args,
+                           {{alpha, beta, DNNL_ARG_DIFF_SRC,
+                             memory_desc_ext(help_diff_src_desc), diff_src}});
 }
 // DPCT_LABEL_END
 
