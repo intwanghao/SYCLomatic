@@ -102,7 +102,6 @@ public:
   /// memory dimension.
   void set(memory_format_tag tag, dpct::library_data_t dt, int ndims,
            const int dims[]);
-  void set(::dnnl::memory::desc desc) { _desc = desc; }
   /// Getting a ::dnnl::memory::desc from a memory_desc_ext.
   /// \returns The ::dnnl::memory::desc.
   const ::dnnl::memory::desc &get_desc() const { return _desc; }
@@ -687,22 +686,22 @@ class engine_ext {
         help_weight_desc.data.format_desc.blocking.strides,
         help_weight_desc.data.format_desc.blocking.strides + ndims);
     ::dnnl::memory::format_tag tag;
-    bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
-    if (block_size == 4) {
-      if (ndims == 4) {
-        if (is_nhwc) {
-          tag = ::dnnl::memory::format_tag::gohwi;
-        } else {
-          tag = ::dnnl::memory::format_tag::goihw;
-        }
-      } else if (ndims == 5) {
-        if (is_nhwc) {
-          tag = ::dnnl::memory::format_tag::godhwi;
-        } else {
-          tag = ::dnnl::memory::format_tag::goidhw;
-        }
+    bool is_nhwc = (strides[1] == 1 && old_size[1] != 1);
+
+    if (ndims == 4) {
+      if (is_nhwc) {
+        tag = ::dnnl::memory::format_tag::gohwi;
+      } else {
+        tag = ::dnnl::memory::format_tag::goihw;
+      }
+    } else if (ndims == 5) {
+      if (is_nhwc) {
+        tag = ::dnnl::memory::format_tag::godhwi;
+      } else {
+        tag = ::dnnl::memory::format_tag::goidhw;
       }
     }
+
     help_weight_desc =
         ::dnnl::memory::desc(new_size, weight_desc.get_desc().data_type(), tag);
     return help_weight_desc;
@@ -2149,6 +2148,11 @@ sycl::event engine_ext::batch_normalization_forward_training(
           ::dnnl::normalization_flags::use_scale |
               ::dnnl::normalization_flags::use_shift);
 
+  void *saved_mean_cache = nullptr, *saved_var_cache = nullptr;
+  if (!saved_mean && !saved_var) {
+    saved_mean_cache = allocate(help_scale_bias_mean_var_desc);
+    saved_var_cache = allocate(help_scale_bias_mean_var_desc);
+  }
   std::unordered_map<int, ::dnnl::memory> execution_args = {
       {DNNL_ARG_SRC, {::dnnl::memory(help_src_desc, _eng, src)}},
       {DNNL_ARG_SCALE,
@@ -2156,25 +2160,40 @@ sycl::event engine_ext::batch_normalization_forward_training(
       {DNNL_ARG_SHIFT,
        {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, bias)}},
       {DNNL_ARG_MEAN,
-       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, saved_mean)}},
+       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng,
+                       saved_mean ? saved_mean : saved_mean_cache)}},
       {DNNL_ARG_VARIANCE,
-       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, saved_var)}}};
+       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng,
+                       saved_var ? saved_var : saved_var_cache)}}};
 
-  execute_primitive(primitive, execution_args,
-                    {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
-  auto src_ndim = src_desc.get_desc().data.ndims;
-  auto src_dims = src_desc.get_desc().dims();
-  int element_num = src_dims[0];
-  if (mode == batch_normalization_mode::spatial) {
-    for (int index = 2; index < src_ndim; index++) {
-      element_num *= src_dims[index];
+  sycl::event e =
+      execute_primitive(primitive, execution_args,
+                        {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
+
+  if (running_var) {
+    auto src_ndim = src_desc.get_desc().data.ndims;
+    auto src_dims = src_desc.get_desc().dims();
+    int element_num = src_dims[0];
+    if (mode == batch_normalization_mode::spatial) {
+      for (int index = 2; index < src_ndim; index++) {
+        element_num *= src_dims[index];
+      }
     }
+    float unbias_factor = element_num / (element_num - 1.f);
+    e = sum(factor * unbias_factor, scale_bias_mean_var_desc,
+            saved_var ? saved_var : saved_var_cache, (1.f - factor),
+            scale_bias_mean_var_desc, running_var);
   }
-  float unbias_factor = element_num / (element_num - 1.f);
-  sum(factor, scale_bias_mean_var_desc, saved_mean, (1.f - factor),
-      scale_bias_mean_var_desc, running_mean);
-  return sum(factor * unbias_factor, scale_bias_mean_var_desc, saved_var,
-             (1.f - factor), scale_bias_mean_var_desc, running_var);
+  if (running_mean) {
+    e = sum(factor, scale_bias_mean_var_desc,
+            saved_mean ? saved_mean : saved_mean_cache, (1.f - factor),
+            scale_bias_mean_var_desc, running_mean);
+  }
+  if (!saved_mean && !saved_var) {
+    async_dpct_free({saved_mean_cache}, {e}, *_q);
+    async_dpct_free({saved_var_cache}, {e}, *_q);
+  }
+  return e;
 }
 // DPCT_LABEL_END
 
@@ -2220,6 +2239,20 @@ sycl::event engine_ext::batch_normalization_backward(
           help_src_desc, epsilon,
           ::dnnl::normalization_flags::use_scale |
               ::dnnl::normalization_flags::use_shift);
+  void *dst_cache = nullptr, *bias_cache = nullptr, *saved_mean_cache = nullptr,
+       *saved_var_cache = nullptr;
+
+  if (!saved_mean && !saved_var) {
+    dst_cache = allocate(diff_dst_desc);
+    bias_cache = allocate(diff_scale_bias_desc);
+    _q->memset(bias_cache, 0, diff_scale_bias_desc.get_size());
+    saved_mean_cache = allocate(diff_scale_bias_desc);
+    saved_var_cache = allocate(diff_scale_bias_desc);
+    batch_normalization_forward_training(
+        mode, epsilon, 0.f, 1.f, src_desc, src, 0.f, diff_dst_desc, dst_cache,
+        diff_scale_bias_desc, scale, bias_cache, nullptr, nullptr,
+        saved_mean_cache, saved_var_cache);
+  }
 
   std::unordered_map<int, ::dnnl::memory> execution_args = {
       {DNNL_ARG_SRC, {::dnnl::memory(help_src_desc, _eng, src)}},
@@ -2228,19 +2261,26 @@ sycl::event engine_ext::batch_normalization_backward(
       {DNNL_ARG_SHIFT,
        {::dnnl::memory(help_diff_scale_bias_desc, _eng, nullptr)}},
       {DNNL_ARG_MEAN,
-       {::dnnl::memory(help_diff_scale_bias_desc, _eng, saved_mean)}},
+       {::dnnl::memory(help_diff_scale_bias_desc, _eng,
+                       saved_mean ? saved_mean : saved_mean_cache)}},
       {DNNL_ARG_VARIANCE,
-       {::dnnl::memory(help_diff_scale_bias_desc, _eng, saved_var)}},
+       {::dnnl::memory(help_diff_scale_bias_desc, _eng,
+                       saved_var ? saved_var : saved_var_cache)}},
       {DNNL_ARG_DIFF_DST,
        {::dnnl::memory(help_diff_src_desc, _eng, diff_dst)}}};
 
-  return execute_primitive(
+  sycl::event e = execute_primitive(
       primitive, execution_args,
       {{alpha_data, beta_data, DNNL_ARG_DIFF_SRC, help_diff_src_desc, diff_src},
        {alpha_param, beta_param, DNNL_ARG_DIFF_SCALE, help_diff_scale_bias_desc,
         diff_scale},
        {alpha_param, beta_param, DNNL_ARG_DIFF_SHIFT, help_diff_scale_bias_desc,
         diff_bias}});
+  if (!saved_mean && !saved_var) {
+    async_dpct_free({dst_cache, bias_cache, saved_mean_cache, saved_var_cache},
+                    {e}, *_q);
+  }
+  return e;
 }
 // DPCT_LABEL_END
 
@@ -2273,7 +2313,11 @@ sycl::event engine_ext::batch_normalization_forward_training_ex(
     help_addition_desc =
         compress_spatial_dimensions_to_channel(help_addition_desc);
   }
-
+  void *saved_mean_cache = nullptr, *saved_var_cache = nullptr;
+  if (!saved_mean && !saved_var) {
+    saved_mean_cache = allocate(help_scale_bias_mean_var_desc);
+    saved_var_cache = allocate(help_scale_bias_mean_var_desc);
+  }
   auto primitive =
       create_forward_primitive<::dnnl::batch_normalization_forward>(
           ::dnnl::prop_kind::forward_training, help_src_desc, epsilon,
@@ -2286,10 +2330,12 @@ sycl::event engine_ext::batch_normalization_forward_training_ex(
       {DNNL_ARG_SHIFT,
        {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, bias)}},
       {DNNL_ARG_MEAN,
-       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, saved_mean)}},
+       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng,
+                       saved_mean ? saved_mean : saved_mean_cache)}},
       {DNNL_ARG_VARIANCE,
-       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, saved_var)}}};
-
+       {::dnnl::memory(help_scale_bias_mean_var_desc, _eng,
+                       saved_var ? saved_var : saved_var_cache)}}};
+  sycl::event e;
   if (ops != batch_normalization_ops::none) {
     if (reserve_space_size < help_dst_desc.get_size()) {
       throw std::runtime_error(
@@ -2301,25 +2347,35 @@ sycl::event engine_ext::batch_normalization_forward_training_ex(
     if (ops == batch_normalization_ops::add_activation) {
       sum(1.f, help_addition_desc, addition, 1.f, help_dst_desc, reserve_space);
     }
-    activation_forward(adesc, alpha, help_dst_desc, reserve_space, beta,
+    e = activation_forward(adesc, alpha, help_dst_desc, reserve_space, beta,
                        help_dst_desc, dst);
   } else {
-    execute_primitive(primitive, execution_args,
+    e = execute_primitive(primitive, execution_args,
                       {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
   }
-  auto src_ndim = src_desc.get_desc().data.ndims;
-  auto src_dims = src_desc.get_desc().dims();
-  int element_num = src_dims[0];
-  if (mode == batch_normalization_mode::spatial) {
-    for (int index = 2; index < src_ndim; index++) {
-      element_num *= src_dims[index];
+  if (!running_var) {
+    auto src_ndim = src_desc.get_desc().data.ndims;
+    auto src_dims = src_desc.get_desc().dims();
+    int element_num = src_dims[0];
+    if (mode == batch_normalization_mode::spatial) {
+      for (int index = 2; index < src_ndim; index++) {
+        element_num *= src_dims[index];
+      }
     }
+    float unbias_factor = element_num / (element_num - 1.f);
+
+    e = sum(factor * unbias_factor, scale_bias_mean_var_desc, saved_var,
+        (1.f - factor), scale_bias_mean_var_desc, running_var);
   }
-  float unbias_factor = element_num / (element_num - 1.f);
-  sum(factor, scale_bias_mean_var_desc, saved_mean, (1.f - factor),
-      scale_bias_mean_var_desc, running_mean);
-  return sum(factor * unbias_factor, scale_bias_mean_var_desc, saved_var,
-             (1.f - factor), scale_bias_mean_var_desc, running_var);
+  if (!running_mean) {
+    e = sum(factor, scale_bias_mean_var_desc, saved_mean, (1.f - factor),
+        scale_bias_mean_var_desc, running_mean);
+  }
+  if (!saved_mean && !saved_var) {
+    async_dpct_free({saved_mean_cache}, {e}, *_q);
+    async_dpct_free({saved_var_cache}, {e}, *_q);
+  }
+  return e;
 }
 // DPCT_LABEL_END
 
@@ -2365,6 +2421,16 @@ sycl::event engine_ext::batch_normalization_backward_ex(
         compress_spatial_dimensions_to_channel(help_diff_dst_desc);
   }
 
+  if (!saved_mean && !saved_var) {
+    dst_cache = allocate(dst_desc);
+    saved_mean_cache = allocate(diff_scale_bias_desc);
+    saved_var_cache = allocate(diff_scale_bias_desc);
+    batch_normalization_forward_training(
+        mode, epsilon, 0.f, 1.f, src_desc, src, 0.f, dst_desc, dst_cache,
+        diff_scale_bias_desc, scale, bias, nullptr, nullptr,
+        saved_mean_cache, saved_var_cache);
+  }
+
   auto forward_primitive =
       create_forward_primitive_desc<::dnnl::batch_normalization_forward>(
           ::dnnl::prop_kind::forward_training, help_src_desc, epsilon,
@@ -2384,9 +2450,11 @@ sycl::event engine_ext::batch_normalization_backward_ex(
        {::dnnl::memory(help_diff_scale_bias_desc, _eng, scale)}},
       {DNNL_ARG_SHIFT, {::dnnl::memory(help_diff_scale_bias_desc, _eng, bias)}},
       {DNNL_ARG_MEAN,
-       {::dnnl::memory(help_diff_scale_bias_desc, _eng, saved_mean)}},
+       {::dnnl::memory(help_diff_scale_bias_desc, _eng,
+                       saved_mean ? saved_mean : saved_mean_cache)}},
       {DNNL_ARG_VARIANCE,
-       {::dnnl::memory(help_diff_scale_bias_desc, _eng, saved_var)}}};
+       {::dnnl::memory(help_diff_scale_bias_desc, _eng,
+                       saved_var ? saved_var : saved_var_cache)}}};
 
   void *cache = nullptr;
   if (ops == batch_normalization_ops::none) {
@@ -2417,7 +2485,14 @@ sycl::event engine_ext::batch_normalization_backward_ex(
         diff_scale},
        {alpha_param, beta_param, DNNL_ARG_DIFF_SHIFT, diff_scale_bias_desc,
         diff_bias}});
-  async_dpct_free({cache}, {e}, *_q);
+
+  if (!saved_mean && !saved_var) {
+    async_dpct_free(
+        {cache, dst_cache, bias_cache, saved_mean_cache, saved_var_cache}, {e},
+        *_q);
+  } else {
+    async_dpct_free({cache}, {e}, *_q);
+  }
   return e;
 }
 // DPCT_LABEL_END
