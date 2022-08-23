@@ -1085,8 +1085,7 @@ public:
       const memory_desc_ext &dst_desc, void *dst,
       const memory_desc_ext &addition_desc, void *addition,
       const memory_desc_ext &scale_bias_mean_var_desc, void *scale, void *bias,
-      void *running_mean, void *running_var, void *saved_mean, void *saved_var,
-      void *reserve_space, size_t reserve_space_size);
+      void *running_mean, void *running_var, void *saved_mean, void *saved_var);
 // DPCT_LABEL_END
 
 // DPCT_LABEL_BEGIN|batch_normalization_backward_ex_decl|dpct::dnnl
@@ -1106,8 +1105,7 @@ public:
       const memory_desc_ext &diff_addition_desc, void *diff_addition,
       float alpha_param, const memory_desc_ext &diff_scale_bias_desc,
       void *scale, void *bias, float beta_param, void *diff_scale,
-      void *diff_bias, void *saved_mean, void *saved_var, void *reserve_space,
-      size_t reserve_space_size);
+      void *diff_bias, void *saved_mean, void *saved_var);
 // DPCT_LABEL_END
 
 // DPCT_LABEL_BEGIN|convolution_forward_decl|dpct::dnnl
@@ -2065,8 +2063,8 @@ void engine_ext::derive_batch_normalization_memory_desc(
   }
   std::vector<int64_t> strides(
       src_desc.get_desc().data.format_desc.blocking.strides,
-      src_desc.get_desc().data.format_desc.blocking.strides + ndims);
-  std::vector<int64_t> dims(src_desc.get_desc().dims());
+      src_desc.get_desc().data.format_desc.blocking.strides + src_ndims);
+
   bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
   if (src_desc.get_desc().data.format_desc.blocking.inner_blks[0] == 4) {
     desc.set_desc(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
