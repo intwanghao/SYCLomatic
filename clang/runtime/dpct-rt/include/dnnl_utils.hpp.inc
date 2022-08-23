@@ -2130,10 +2130,14 @@ sycl::event engine_ext::batch_normalization_forward_inference(
   }
 
   //::dnnl::memory::desc help_src_desc = src_desc.get_desc();
-  void *reordered_src = nullptr;
-  ::dnnl::memory::desc help_src_desc = get_bn_src_desc(src_desc, mode);
-  if(help_src_desc != src_desc) {
+  void *reordered_src = nullptr, *reordered_dst;
+  ::dnnl::memory::desc help_src_desc =
+      get_bn_src_desc(src_desc.get_desc(), mode);
+  ::dnnl::memory::desc help_dst_desc =
+      get_bn_src_desc(dst_desc.get_desc(), mode); 
+  if(help_src_desc != src_desc.get_desc()) {
     reordered_src = allocate(src_desc);
+    reordered_dst = allocate(dst_desc);
     reorder(1.f, src_desc, src, 0.f, help_src_desc, reordered_src);
   }
   ::dnnl::memory::desc help_dst_desc = dst_desc.get_desc();
@@ -2165,9 +2169,12 @@ sycl::event engine_ext::batch_normalization_forward_inference(
        {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, var)}}};
 
   auto e = execute_primitive(primitive, execution_args,
-                             {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
+                             {{alpha, beta, DNNL_ARG_DST, help_dst_desc,
+                               reordered_dst ? reordered_dst : dst}});
   if (reordered_src) {
-    async_dpct_free({reordered_src}, {e}, *_q);
+    e = reorder(1.f, get_bn_src_desc(dst_desc.get_desc(), mode), reordered_dst, 0.f,
+            dst_desc.get_desc(), dst);
+    async_dpct_free({reordered_src, reordered_dst}, {e}, *_q);
   }
   return e;
 }
