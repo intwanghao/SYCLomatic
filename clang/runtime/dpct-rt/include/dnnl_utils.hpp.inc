@@ -590,6 +590,8 @@ class engine_ext {
   compress_spatial_dimensions_to_channel(::dnnl::memory::desc desc);
   ::dnnl::memory::desc get_bn_scale_bias_desc(::dnnl::memory::desc desc,
                                               batch_normalization_mode mode);
+  ::dnnl::memory::desc get_bn_src_desc(::dnnl::memory::desc desc,
+                                       batch_normalization_mode mode);
   template <typename primitive_type, typename... args_type>
   primitive_type create_forward_primitive(args_type &&...args);
 
@@ -1366,6 +1368,29 @@ engine_ext::get_bn_scale_bias_desc(::dnnl::memory::desc desc,
                               ::dnnl::memory::format_tag::a);
 }
 
+::dnnl::memory::desc
+engine_ext::get_bn_src_desc(::dnnl::memory::desc desc,
+                            batch_normalization_mode mode) {
+  if (mode == batch_normalization_mode::spatial) {
+    return desc;
+  }
+  int ndims = desc.data.ndims;
+  auto dims = desc.dims();
+  std::vector<int64_t> strides(desc.data.format_desc.blocking.strides,
+                               desc.data.format_desc.blocking.strides + ndims);
+  ::dnnl::memory::format_tag tag;
+  bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
+  if (!is_nhwc) {
+    return desc;
+  }
+  if (ndims == 4) {
+    return ::dnnl::memory::desc(dims, desc.data_type(),
+                                ::dnnl::memory::format_tag::nchw);
+  }
+  return ::dnnl::memory::desc(dims, desc.data_type(),
+                              ::dnnl::memory::format_tag::ncdhw);
+}
+
 bool engine_ext::scale_parameter_preprocess(
     std::vector<std::tuple<float, float, memory_desc_ext, void *>> args) {
   bool direct_exit = true;
@@ -2103,7 +2128,14 @@ sycl::event engine_ext::batch_normalization_forward_inference(
   if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
     return sycl::event();
   }
-  ::dnnl::memory::desc help_src_desc = src_desc.get_desc();
+
+  //::dnnl::memory::desc help_src_desc = src_desc.get_desc();
+  void *reordered_src = nullptr;
+  ::dnnl::memory::desc help_src_desc = get_bn_src_desc(src_desc, mode);
+  if(help_src_desc != src_desc) {
+    reordered_src = allocate(src_desc);
+    reorder(1.f, src_desc, src, 0.f, help_src_desc, reordered_src);
+  }
   ::dnnl::memory::desc help_dst_desc = dst_desc.get_desc();
 
   if (mode == batch_normalization_mode::per_activation) {
@@ -2120,7 +2152,9 @@ sycl::event engine_ext::batch_normalization_forward_inference(
               ::dnnl::normalization_flags::use_shift);
 
   std::unordered_map<int, ::dnnl::memory> execution_args = {
-      {DNNL_ARG_SRC, {::dnnl::memory(help_src_desc, _eng, src)}},
+      {DNNL_ARG_SRC,
+       {::dnnl::memory(help_src_desc, _eng,
+                       reordered_src ? reordered_src : src)}},
       {DNNL_ARG_SCALE,
        {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, scale)}},
       {DNNL_ARG_SHIFT,
@@ -2130,8 +2164,12 @@ sycl::event engine_ext::batch_normalization_forward_inference(
       {DNNL_ARG_VARIANCE,
        {::dnnl::memory(help_scale_bias_mean_var_desc, _eng, var)}}};
 
-  return execute_primitive(primitive, execution_args,
-                           {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
+  auto e = execute_primitive(primitive, execution_args,
+                             {{alpha, beta, DNNL_ARG_DST, help_dst_desc, dst}});
+  if (reordered_src) {
+    async_dpct_free({reordered_src}, {e}, *_q);
+  }
+  return e;
 }
 // DPCT_LABEL_END
 
