@@ -105,6 +105,7 @@ public:
   /// Getting a ::dnnl::memory::desc from a memory_desc_ext.
   /// \returns The ::dnnl::memory::desc.
   const ::dnnl::memory::desc &get_desc() const { return _desc; }
+  void set_desc(::dnnl::memory::desc desc) { _desc = desc; }
   /// Getting a size of a memory_desc_ext in bytes.
   /// \returns The size.
   size_t get_size() const { return _desc.get_size(); }
@@ -2063,10 +2064,10 @@ void engine_ext::derive_batch_normalization_memory_desc(
     }
   }
   if (src_ndims == 4) {
-    desc.set(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
+    desc.set_desc(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
                                   ::dnnl::memory::format_tag::nchw));
   } else {
-    desc.set(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
+    desc.set_desc(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
                                   ::dnnl::memory::format_tag::ncdhw));
   }
 }
@@ -2420,7 +2421,8 @@ sycl::event engine_ext::batch_normalization_backward_ex(
     help_diff_dst_desc =
         compress_spatial_dimensions_to_channel(help_diff_dst_desc);
   }
-
+  void *dst_cache = nullptr, *saved_mean_cache = nullptr,
+       *saved_var_cache = nullptr;
   if (!saved_mean && !saved_var) {
     dst_cache = allocate(dst_desc);
     saved_mean_cache = allocate(diff_scale_bias_desc);
@@ -2488,7 +2490,7 @@ sycl::event engine_ext::batch_normalization_backward_ex(
 
   if (!saved_mean && !saved_var) {
     async_dpct_free(
-        {cache, dst_cache, bias_cache, saved_mean_cache, saved_var_cache}, {e},
+        {cache, dst_cache, saved_mean_cache, saved_var_cache}, {e},
         *_q);
   } else {
     async_dpct_free({cache}, {e}, *_q);
