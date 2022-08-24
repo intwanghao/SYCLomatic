@@ -132,6 +132,15 @@ public:
   /// stride of each memory dimension.
   void get(int requested_ndims, dpct::library_data_t *dt, int *ndims,
            int dims[], int strides[]) const;
+  std::vector<int64_t> get_dims(){
+    return _desc.dims();
+  }
+  std::vector<int64_t> get_strides() {
+    int ndims = _desc.data.ndims;
+    return std::vector<int64_t>(_desc.data.format_desc.blocking.strides,
+                                _desc.data.format_desc.blocking.strides +
+                                    ndims);
+  }
   static size_t get_element_num(memory_desc_ext desc) {
     return get_element_num(desc.get_desc());
   }
@@ -584,7 +593,13 @@ class engine_ext {
   }
   const ::dnnl::stream &get_stream() const { return _s; }
   const ::dnnl::engine &get_engine() const { return _eng; }
-
+  bool is_channel_major(memory_desc_ext desc) {
+    std::vector<int64_t> dims = desc.get_desc().dims();
+    std::vector<int64_t> strides(
+        desc.get_desc().data.format_desc.blocking.strides,
+        desc.get_desc().data.format_desc.blocking.strides + ndims);
+    return !(strides[1] == 1 && old_size[1] != 1);  
+  };
   void *allocate(const memory_desc_ext &desc, int count = 1) const;
   ::dnnl::memory::desc
   compress_spatial_dimensions_to_channel(::dnnl::memory::desc desc);
@@ -1371,16 +1386,14 @@ engine_ext::get_bn_scale_bias_desc(::dnnl::memory::desc desc,
 ::dnnl::memory::desc
 engine_ext::get_bn_src_desc(::dnnl::memory::desc desc,
                             batch_normalization_mode mode) {
-  if (mode == batch_normalization_mode::spatial) {
+  if ((mode == batch_normalization_mode::spatial) ||
+      desc.data.format_desc.blocking.inner_blks[0]) {
     return desc;
   }
   int ndims = desc.data.ndims;
   auto dims = desc.dims();
-  std::vector<int64_t> strides(desc.data.format_desc.blocking.strides,
-                               desc.data.format_desc.blocking.strides + ndims);
-  ::dnnl::memory::format_tag tag;
-  bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
-  if (!is_nhwc) {
+  bool is_nchw = is_channel_major(desc);
+  if (is_nchw) {
     return desc;
   }
   if (ndims == 4) {
@@ -2086,11 +2099,7 @@ void engine_ext::derive_batch_normalization_memory_desc(
       dims[4] = 1;
     }
   }
-  std::vector<int64_t> strides(
-      src_desc.get_desc().data.format_desc.blocking.strides,
-      src_desc.get_desc().data.format_desc.blocking.strides + src_ndims);
 
-  bool is_nhwc = (strides[1] == 1 && dims[1] != 1);
   if (src_desc.get_desc().data.format_desc.blocking.inner_blks[0] == 4) {
     desc.set_desc(::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
                                        ::dnnl::memory::format_tag::nChw4c));
@@ -2102,13 +2111,11 @@ void engine_ext::derive_batch_normalization_memory_desc(
     if (src_ndims == 4) {
       desc.set_desc(
           ::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
-                               is_nhwc ? ::dnnl::memory::format_tag::nhwc
-                                       : ::dnnl::memory::format_tag::nchw));
+                                      ::dnnl::memory::format_tag::nchw));
     } else {
       desc.set_desc(
           ::dnnl::memory::desc(dims, src_desc.get_desc().data_type(),
-                               is_nhwc ? ::dnnl::memory::format_tag::ndhwc
-                                       : ::dnnl::memory::format_tag::ncdhw));
+                                      ::dnnl::memory::format_tag::ncdhw));
     }
   }
 }
@@ -2128,23 +2135,38 @@ sycl::event engine_ext::batch_normalization_forward_inference(
   if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
     return sycl::event();
   }
-
-  //::dnnl::memory::desc help_src_desc = src_desc.get_desc();
-  void *reordered_src = nullptr, *reordered_dst;
-  ::dnnl::memory::desc help_src_desc =
-      get_bn_src_desc(src_desc.get_desc(), mode);
-  ::dnnl::memory::desc help_dst_desc =
-      get_bn_src_desc(dst_desc.get_desc(), mode); 
-  if(help_src_desc != src_desc.get_desc()) {
-    reordered_src = allocate(src_desc);
-    reordered_dst = allocate(dst_desc);
-    reorder(1.f, src_desc, src, 0.f, help_src_desc, reordered_src);
-  }
+  std::vector<void *> caches;
+  void *reordered_src = nullptr, *reordered_dst = nullptr;
+  ::dnnl::memory::desc help_src_desc = src_desc.get_desc();
   ::dnnl::memory::desc help_dst_desc = dst_desc.get_desc();
+  ::dnnl::memory::desc actual_dst_desc = help_dst_desc;
 
   if (mode == batch_normalization_mode::per_activation) {
+    help_src_desc =
+        get_bn_src_desc(src_desc.get_desc(), mode);
+    help_dst_desc =
+        get_bn_src_desc(dst_desc.get_desc(), mode);
+    actual_dst_desc = help_dst_desc;
+    if (help_src_desc != src_desc.get_desc()) {
+      reordered_src = allocate(src_desc);
+      reorder(1.f, src_desc, src, 0.f, help_src_desc, reordered_src);
+      caches.push_back(reordered_src);
+    }
+    if (help_dst_desc != dst_desc.get_desc()) {
+      reordered_dst = allocate(dst_desc);
+      caches.push_back(reordered_dst);
+    }
     help_src_desc = compress_spatial_dimensions_to_channel(help_src_desc);
     help_dst_desc = compress_spatial_dimensions_to_channel(help_dst_desc);
+  } else {
+    if(help_src_desc != help_dst_desc) {
+      reordered_dst = allocate(dst_desc);
+      help_dst_desc =
+          ::dnnl::memory::desc(help_dst_desc.dims(), help_dst_desc.data_type(),
+                               src_desc.get_strides());
+      actual_dst_desc = help_dst_desc;
+      caches.push_back(reordered_dst);
+    }
   }
   ::dnnl::memory::desc help_scale_bias_mean_var_desc =
       get_bn_scale_bias_desc(scale_bias_mean_var_desc.get_desc(), mode);
@@ -2171,10 +2193,11 @@ sycl::event engine_ext::batch_normalization_forward_inference(
   auto e = execute_primitive(primitive, execution_args,
                              {{alpha, beta, DNNL_ARG_DST, help_dst_desc,
                                reordered_dst ? reordered_dst : dst}});
-  if (reordered_src) {
-    e = reorder(1.f, get_bn_src_desc(dst_desc.get_desc(), mode), reordered_dst, 0.f,
-            dst_desc.get_desc(), dst);
-    async_dpct_free({reordered_src, reordered_dst}, {e}, *_q);
+  if (actual_dst_desc != dst_desc.get_desc()) {
+    e = reorder(1.f, actual_dst_desc, reordered_dst, 0.f, dst_desc, dst);
+  }
+  if(!caches.empty()) {
+    async_dpct_free(caches, {e}, *_q);
   }
   return e;
 }
