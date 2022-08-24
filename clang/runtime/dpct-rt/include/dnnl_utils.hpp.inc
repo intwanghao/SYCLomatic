@@ -594,11 +594,12 @@ class engine_ext {
   const ::dnnl::stream &get_stream() const { return _s; }
   const ::dnnl::engine &get_engine() const { return _eng; }
   bool is_channel_major(memory_desc_ext desc) {
+    int ndims = desc.get_desc().data.ndims;
     std::vector<int64_t> dims = desc.get_desc().dims();
     std::vector<int64_t> strides(
         desc.get_desc().data.format_desc.blocking.strides,
         desc.get_desc().data.format_desc.blocking.strides + ndims);
-    return !(strides[1] == 1 && old_size[1] != 1);  
+    return !(strides[1] == 1 && dims[1] != 1);  
   };
   void *allocate(const memory_desc_ext &desc, int count = 1) const;
   ::dnnl::memory::desc
