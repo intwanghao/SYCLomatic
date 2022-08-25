@@ -2402,9 +2402,10 @@ sycl::event engine_ext::batch_normalization_backward_internal(
         true, help_diff_scale_bias_mean_var_desc, scale, &reordered_scale,
         caches);
     actual_diff_scale_bias_mean_var_desc = help_diff_scale_bias_mean_var_desc;
-
-    bn_reorder_memory_to_channel_major(true, help_diff_scale_bias_mean_var_desc,
+    if(bias) {
+      bn_reorder_memory_to_channel_major(true, help_diff_scale_bias_mean_var_desc,
                                        bias, &reordered_bias, caches);
+    }
     bn_reorder_memory_to_channel_major(
         false, help_diff_scale_bias_mean_var_desc, diff_scale,
         &reordered_diff_scale, caches);
@@ -2434,6 +2435,10 @@ sycl::event engine_ext::batch_normalization_backward_internal(
       actual_diff_src_desc = help_diff_src_desc;
     }
   }
+
+  help_diff_scale_bias_mean_var_desc =
+      get_bn_scale_bias_desc(help_diff_scale_bias_mean_var_desc, mode);
+
   auto forward_primitive =
       create_forward_primitive_desc<::dnnl::batch_normalization_forward>(
           ::dnnl::prop_kind::forward_training, help_src_desc, epsilon,
@@ -2447,9 +2452,6 @@ sycl::event engine_ext::batch_normalization_backward_internal(
               ::dnnl::normalization_flags::use_shift);
 
   void *dst_cache = nullptr;
-  if (!bias) {
-    _q->memset(reordered_bias, 0, diff_scale_bias_mean_var_desc.get_size());
-  }
   if (!saved_mean && !saved_var) {
     dst_cache = allocate(diff_dst_desc);
     batch_normalization_forward_training(
