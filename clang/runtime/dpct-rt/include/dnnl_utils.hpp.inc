@@ -2454,11 +2454,22 @@ sycl::event engine_ext::batch_normalization_backward_internal(
   void *dst_cache = nullptr;
   if (!saved_mean && !saved_var) {
     dst_cache = allocate(diff_dst_desc);
+    if(!reordered_saved_mean) {
+      reordered_saved_mean = allocate(diff_scale_bias_mean_var_desc);
+    }
+    if(!reordered_saved_var) {
+      reordered_saved_var = allocate(diff_scale_bias_mean_var_desc);
+    }
+    if(!bias) {
+      _q->fill(reordered_bias, 0, diff_scale_bias_mean_var_desc.get_size());
+    }
     batch_normalization_forward_training(
         mode, epsilon, 0.f, 1.f, src_desc, src, 0.f, diff_dst_desc, dst_cache,
         diff_scale_bias_mean_var_desc, scale, bias ? bias : reordered_bias,
         nullptr, nullptr, reordered_saved_mean, reordered_saved_var);
     caches.push_back(dst_cache);
+    caches.push_back(reordered_saved_mean);
+    caches.push_back(reordered_saved_var);
   }
 
   std::unordered_map<int, ::dnnl::memory> execution_args = {
