@@ -141,15 +141,12 @@ public:
                                 _desc.data.format_desc.blocking.strides +
                                     ndims);
   }
-  static size_t get_element_num(memory_desc_ext desc) {
-    return get_element_num(desc.get_desc());
-  }
-  static size_t get_element_num(::dnnl::memory::desc desc) {
-    if (!desc.dims().size()) {
+  size_t get_element_num() {
+    if (_desc.dims().empty()) {
       return 0;
     }
     size_t result = 1;
-    for (auto &dim : desc.dims()) {
+    for (auto &dim : _desc.dims()) {
       result *= dim;
     }
     return result;
@@ -587,20 +584,24 @@ class engine_ext {
   sycl::queue *_q;
   std::map<void *, ::dnnl::memory> workspace_map;
 
+  struct output_parameter_desc {
+    float _alpha;
+    float _beta;
+    int _name;
+    memory_desc_ext _desc;
+    void *_data;
+    output_parameter_desc(float alpha, float beta, int name,
+                          memory_desc_ext desc, void *data)
+        : _alpha(alpha), _beta(beta), _name(name), _desc(desc), _data(data) {}
+  };
+
   ::dnnl::memory &get_workspace(void *key) { return workspace_map[key]; }
   void insert_workspace(void *key, ::dnnl::memory workspace) {
     workspace_map[key] = workspace;
   }
   const ::dnnl::stream &get_stream() const { return _s; }
   const ::dnnl::engine &get_engine() const { return _eng; }
-  bool is_channel_major(memory_desc_ext desc) {
-    int ndims = desc.get_desc().data.ndims;
-    std::vector<int64_t> dims = desc.get_desc().dims();
-    std::vector<int64_t> strides(
-        desc.get_desc().data.format_desc.blocking.strides,
-        desc.get_desc().data.format_desc.blocking.strides + ndims);
-    return !(strides[1] == 1 && dims[1] != 1);  
-  };
+
   void *allocate(const memory_desc_ext &desc, int count = 1) const;
   ::dnnl::memory::desc
   compress_spatial_dimensions_to_channel(::dnnl::memory::desc desc);
@@ -651,7 +652,7 @@ class engine_ext {
                                         args_type &&...args);
 
   bool scale_parameter_preprocess(
-      std::vector<std::tuple<float, float, memory_desc_ext, void *>> args);
+      const std::vector<output_parameter_desc> &args);
 
   template <typename primitive_type, typename args_type>
   sycl::event execute_primitive(
@@ -668,7 +669,7 @@ class engine_ext {
   };
   void transform_no_zero(memory_desc_ext desc, void *src, void *dst) {
     ::dnnl::memory::data_type dt = desc.get_desc().data_type();
-    size_t element_num = memory_desc_ext::get_element_num(desc);
+    size_t element_num = desc.get_element_num();
     switch (dt) {
     case ::dnnl::memory::data_type::f32:
       std::transform(oneapi::dpl::execution::make_device_policy(*_q),
@@ -1380,11 +1381,17 @@ engine_ext::compress_spatial_dimensions_to_channel(::dnnl::memory::desc desc) {
     compressed_dims[1] = compressed_dims[1] * desc.data.dims[index];
     compressed_dims[index] = 1;
   }
+  if (desc.data.format_desc.blocking.inner_blks[0] == 4) {
+    return ::dnnl::memory::desc(compressed_dims, desc.data_type(),
+                                ::dnnl::memory::format_tag::nChw4c);
+  } else if (desc.data.format_desc.blocking.inner_blks[0] == 32) {
+    return ::dnnl::memory::desc(compressed_dims, desc.data_type(),
+                                ::dnnl::memory::format_tag::nChw32c);
+  }
   std::vector<int64_t> strides(ndims, 1);
   strides[0] = compressed_dims[1];
 
-  return ::dnnl::memory::desc(compressed_dims, desc.data_type(),
-                              strides);
+  return ::dnnl::memory::desc(compressed_dims, desc.data_type(), strides);
 }
 
 ::dnnl::memory::desc
@@ -1420,12 +1427,12 @@ engine_ext::transfer_memory_desc_to_channel_major(::dnnl::memory::desc desc) {
 }
 
 bool engine_ext::scale_parameter_preprocess(
-    std::vector<std::tuple<float, float, memory_desc_ext, void *>> args) {
+    const std::vector<output_parameter_desc> &args) {
   bool direct_exit = true;
   for (auto &arg : args) {
-    if (std::get<0>(arg) == 0.f) {
-      if (std::get<1>(arg) != 1.f) {
-        scale(std::get<1>(arg), std::get<2>(arg), std::get<3>(arg));
+    if (arg._alpha == 0.f) {
+      if (arg._beta != 1.f) {
+        scale(arg._beta, arg._desc, arg._data);
       }
     } else {
       direct_exit = false;
@@ -1807,7 +1814,7 @@ sycl::event engine_ext::activation_forward(activation_desc &desc, float alpha,
                                            void *src, float beta,
                                            const memory_desc_ext &dst_desc,
                                            void *dst) {
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   auto primitive = create_forward_primitive<::dnnl::eltwise_forward>(
@@ -1833,7 +1840,7 @@ sycl::event engine_ext::activation_backward(
     const memory_desc_ext &src_desc, void *src, float beta,
     const memory_desc_ext &diff_src_desc, void *diff_src) {
 
-  if (scale_parameter_preprocess({{alpha, beta, diff_src_desc, diff_src}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, diff_src_desc, diff_src}})) {
     return sycl::event();
   }
   auto primitive = create_backward_primitive<::dnnl::eltwise_backward>(
@@ -1865,7 +1872,7 @@ sycl::event engine_ext::pooling_forward(pooling_desc &desc, float alpha,
                                         void *src, float beta,
                                         const memory_desc_ext &dst_desc,
                                         void *dst, ::dnnl::memory *workspace) {
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   auto primitive_desc = create_forward_primitive_desc<::dnnl::pooling_forward>(
@@ -1901,7 +1908,7 @@ sycl::event engine_ext::pooling_backward(
     const memory_desc_ext &src_desc, void *src, float beta,
     const memory_desc_ext &diff_src_desc, void *diff_src,
     ::dnnl::memory *workspace) {
-  if (scale_parameter_preprocess({{alpha, beta, diff_src_desc, diff_src}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, diff_src_desc, diff_src}})) {
     return sycl::event();
   }
   auto primitive = create_backward_primitive<::dnnl::pooling_backward>(
@@ -1942,7 +1949,7 @@ sycl::event engine_ext::softmax_forward(softmax_algorithm alg,
                                         void *src, float beta,
                                         const memory_desc_ext &dst_desc,
                                         void *dst) {
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   ::dnnl::memory::desc help_src_desc = src_desc.get_desc();
@@ -1979,7 +1986,7 @@ sycl::event engine_ext::softmax_backward(
     const memory_desc_ext &dst_desc, void *dst,
     const memory_desc_ext &diff_dst_desc, void *diff_dst, float beta,
     const memory_desc_ext &diff_src_desc, void *diff_src) {
-  if (scale_parameter_preprocess({{alpha, beta, diff_src_desc, diff_src}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, diff_src_desc, diff_src}})) {
     return sycl::event();
   }
   ::dnnl::memory::desc help_diff_src_desc = diff_src_desc.get_desc();
@@ -2024,7 +2031,7 @@ sycl::event engine_ext::lrn_forward(lrn_desc &desc, float alpha,
                                     float beta, const memory_desc_ext &dst_desc,
                                     void *dst, ::dnnl::memory *workspace) {
 
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   auto primitive_desc = create_forward_primitive_desc<::dnnl::lrn_forward>(
@@ -2061,7 +2068,7 @@ engine_ext::lrn_backward(lrn_desc &desc, float alpha,
                          const memory_desc_ext &diff_src_desc, void *diff_src,
                          ::dnnl::memory *workspace) {
 
-  if (scale_parameter_preprocess({{alpha, beta, diff_src_desc, diff_src}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, diff_src_desc, diff_src}})) {
     return sycl::event();
   }
   auto primitive = create_backward_primitive<::dnnl::lrn_backward>(
@@ -2162,7 +2169,7 @@ sycl::event engine_ext::batch_normalization_forward_internal(
     const memory_desc_ext &dst_desc, void *dst,
     const memory_desc_ext &scale_bias_mean_var_desc, void *scale, void *bias,
     void *saved_mean, void *saved_var, void *running_mean, void *running_var) {
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   std::vector<void *> caches;
@@ -2368,9 +2375,9 @@ sycl::event engine_ext::batch_normalization_backward_internal(
     void *bias, float beta_param, void *diff_scale, void *diff_bias,
     void *saved_mean, void *saved_var) {
   if (scale_parameter_preprocess(
-          {{alpha_data, beta_data, diff_src_desc, diff_src},
-           {alpha_param, beta_param, diff_scale_bias_mean_var_desc, diff_scale},
-           {alpha_param, beta_param, diff_scale_bias_mean_var_desc,
+          {{alpha_data, beta_data, 0, diff_src_desc, diff_src},
+           {alpha_param, beta_param, 0, diff_scale_bias_mean_var_desc, diff_scale},
+           {alpha_param, beta_param, 0, diff_scale_bias_mean_var_desc,
             diff_bias}})) {
     return sycl::event();
   }
@@ -2553,10 +2560,10 @@ sycl::event engine_ext::batch_normalization_backward_ex(
     void *bias, float beta_param, void *diff_scale, void *diff_bias,
     void *saved_mean, void *saved_var, ::dnnl::memory *workspace) {
   if (scale_parameter_preprocess(
-          {{alpha_data, beta_data, diff_src_desc, diff_src},
-           {alpha_data, beta_data, diff_addition_desc, diff_addition},
-           {alpha_param, beta_param, diff_scale_bias_mean_var_desc, diff_scale},
-           {alpha_param, beta_param, diff_scale_bias_mean_var_desc, diff_bias}})) {
+          {{alpha_data, beta_data, 0, diff_src_desc, diff_src},
+           {alpha_data, beta_data, 0, diff_addition_desc, diff_addition},
+           {alpha_param, beta_param, 0, diff_scale_bias_mean_var_desc, diff_scale},
+           {alpha_param, beta_param, 0, diff_scale_bias_mean_var_desc, diff_bias}})) {
     return sycl::event();
   }
   std::vector<void *> caches;
@@ -2613,7 +2620,7 @@ engine_ext::convolution_forward(convolution_desc &desc, ::dnnl::algorithm alg,
                                 void *weight, float beta,
                                 const memory_desc_ext &dst_desc, void *dst) {
 
-  if (scale_parameter_preprocess({{alpha, beta, dst_desc, dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, dst_desc, dst}})) {
     return sycl::event();
   }
   auto help_weight_desc =
@@ -2645,7 +2652,7 @@ sycl::event engine_ext::convolution_forward_ex(
     const memory_desc_ext &bias_desc, void *bias,
     const memory_desc_ext &dst_desc, void *dst) {
 
-  int channel_num = memory_desc_ext::get_element_num(bias_desc);
+  int channel_num = bias_desc.get_element_num();
   auto help_weight_desc =
       get_group_weight_desc(desc.get_group_count(), weight_desc);
   ::dnnl::memory::desc help_bias_desc = {{channel_num},
@@ -2693,7 +2700,7 @@ sycl::event engine_ext::convolution_backward_data(
     const memory_desc_ext &diff_dst_desc, void *diff_dst, float beta,
     const memory_desc_ext &diff_src_desc, void *diff_src) {
 
-  if (scale_parameter_preprocess({{alpha, beta, diff_dst_desc, diff_dst}})) {
+  if (scale_parameter_preprocess({{alpha, beta, 0, diff_dst_desc, diff_dst}})) {
     return sycl::event();
   }
   auto help_weight_desc =
@@ -2734,7 +2741,7 @@ sycl::event engine_ext::convolution_backward_weight(
     const memory_desc_ext &diff_weight_desc, void *diff_weight) {
 
   if (scale_parameter_preprocess(
-          {{alpha, beta, diff_weight_desc, diff_weight}})) {
+          {{alpha, beta, 0, diff_weight_desc, diff_weight}})) {
     return sycl::event();
   }
   auto help_diff_weight_desc =
