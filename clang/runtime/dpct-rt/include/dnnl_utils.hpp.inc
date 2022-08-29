@@ -674,15 +674,16 @@ class engine_ext {
       const memory_desc_ext &src_desc, void *src,
       const memory_desc_ext &diff_dst_desc, void *diff_dst, float beta_data,
       const memory_desc_ext &diff_src_desc, void *diff_src, float alpha_param,
-      const memory_desc_ext &diff_scale_bias_mean_var_desc, void *scale,
-      void *bias, float beta_param, void *diff_scale, void *diff_bias,
-      void *saved_mean, void *saved_var);
+      const memory_desc_ext &diff_scale_bias_desc, void *scale, void *bias,
+      float beta_param, void *diff_scale, void *diff_bias,
+      const memory_desc_ext &mean_var_desc, void *saved_mean, void *saved_var);
   sycl::event batch_normalization_forward_internal(
       bool is_infer, batch_normalization_mode mode, float epsilon, float factor,
       float alpha, const memory_desc_ext &src_desc, void *src, float beta,
       const memory_desc_ext &dst_desc, void *dst,
-      const memory_desc_ext &scale_bias_mean_var_desc, void *scale, void *bias,
-      void *saved_mean, void *saved_var, void *running_mean, void *running_var);
+      const memory_desc_ext &scale_bias_desc, void *scale, void *bias,
+      const memory_desc_ext &mean_var_desc, void *saved_mean, void *saved_var,
+      void *running_mean, void *running_var);
   ::dnnl::memory::desc
   transfer_memory_desc_to_channel_major(::dnnl::memory::desc desc);
   ::dnnl::memory::desc
