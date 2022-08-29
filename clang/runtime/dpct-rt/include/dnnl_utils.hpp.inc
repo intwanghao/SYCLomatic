@@ -718,9 +718,10 @@ class engine_ext {
   execute_primitive(primitive_type &&primitive, args_type &&args,
                     const std::vector<output_argument_info> &extra_args);
   template <typename T>
-  sycl::event fill_with_type(sycl::queue *q, void *src, void *value,
+  sycl::event fill_with_type(sycl::queue *q, void *src, const void *value,
                              size_t size_with_byte) {
-    return q->fill<T>(static_cast<T *>(src), value, size_with_byte / sizeof(T));
+    return q->fill<T>(static_cast<T *>(src), *static_cast<const T *>(value),
+                      size_with_byte / sizeof(T));
   }
   template <typename T> struct no_zero_op {
     T operator()(T e) {
@@ -734,8 +735,8 @@ class engine_ext {
   void transform_no_zero_with_type(sycl::queue *q, void *src, void *dst,
                                    size_t num) {
     std::transform(oneapi::dpl::execution::make_device_policy(*q),
-                   static_cast<T *>(src), static_cast<T *>(src) + num, (T)dst,
-                   no_zero_op<T>());
+                   static_cast<T *>(src), static_cast<T *>(src) + num,
+                   static_cast<T *>(dst), no_zero_op<T>());
   }
   void transform_no_zero(memory_desc_ext desc, void *src, void *dst);
   ::dnnl::memory::desc get_group_weight_desc(int group_count,
@@ -841,8 +842,22 @@ public:
 // DnnlUtils|binary_op
 // DPCT_DEPENDENCY_END
 // DPCT_CODE
-/// \returns An event representing the binary operations.
-  sycl::event binary(binary_op &op, float alpha_0,
+  /// Perform specified binary operation.
+  /// \param [in] op Specified binary operation.
+  /// \param [in] alpha_0 Value to scaling factors used to scale the src_0
+  /// value.
+  /// \param [in] src_desc_0 Source 0 memory descriptor.
+  /// \param [in] src_0 Pointer to source 0 data.
+  /// \param [in] alpha_1 Value to scaling factors used to scale the src_1
+  /// value.
+  /// \param [in] src_desc_1 Source 1 memory descriptor.
+  /// \param [in] src_1 Pointer to source 1 data.
+  /// \param [in] beta Value to scaling factors used to scale the prior value
+  /// in the destination memory.
+  /// \param [in] dst_desc Destination memory descriptor.
+  /// \param [out] dst Pointer to destination data.
+  /// \returns An event representing the binary operations.
+  sycl::event binary(binary_op op, float alpha_0,
                      const memory_desc_ext &src_desc_0, void *src_0,
                      float alpha_1, const memory_desc_ext &src_desc_1,
                      void *src_1, float beta, const memory_desc_ext &dst_desc,
@@ -855,8 +870,18 @@ public:
 // DnnlUtils|reduction_op
 // DPCT_DEPENDENCY_END
 // DPCT_CODE
-/// \returns An event representing the reduction operations.
-  sycl::event reduction(reduction_op &op, float alpha,
+  /// Perform specified binary operation.
+  /// \param [in] op Specified reduction operation.
+  /// \param [in] alpha Value to scaling factors used to scale the data
+  /// value.
+  /// \param [in] src_desc Source memory descriptor.
+  /// \param [in] src Pointer to source data.
+  /// \param [in] beta Value to scaling factors used to scale the prior value
+  /// in the destination memory.
+  /// \param [in] dst_desc Destination memory descriptor.
+  /// \param [out] dst Pointer to destination data.
+  /// \returns An event representing the reduction operations.
+  sycl::event reduction(reduction_op op, float alpha,
                         const memory_desc_ext &src_desc, void *src, float beta,
                         const memory_desc_ext &dst_desc, void *dst);
 // DPCT_LABEL_END
@@ -1777,8 +1802,9 @@ sycl::event engine_ext::execute_primitive(
           {output_args[i]._name,
            ::dnnl::memory(output_args[i]._desc.get_desc(), _eng, cache)});
     } else {
-      args.insert({output_args[i]._name, ::dnnl::memory(desc.get_desc(), _eng,
-                                                        output_args[i]._data)});
+      args.insert(
+          {output_args[i]._name, ::dnnl::memory(output_args[i]._desc.get_desc(),
+                                                _eng, output_args[i]._data)});
     }
   }
 
@@ -1949,7 +1975,7 @@ sycl::event engine_ext::sum(float alpha, const memory_desc_ext &src_desc,
 // DnnlUtils|binary_decl
 // DPCT_DEPENDENCY_END
 // DPCT_CODE
-sycl::event engine_ext::binary(binary_op &op, float alpha_0,
+sycl::event engine_ext::binary(binary_op op, float alpha_0,
                                const memory_desc_ext &src_desc_0, void *src_0,
                                float alpha_1, const memory_desc_ext &src_desc_1,
                                void *src_1, float beta,
@@ -1986,7 +2012,7 @@ sycl::event engine_ext::binary(binary_op &op, float alpha_0,
     void *src_cache = nullptr;
     if (alpha_0 != 1.f) {
       src_cache = allocate(src_desc_0);
-      reorder(alpha_0, src_desc_0, src, 0.f, src_desc_0, src_cache);
+      reorder(alpha_0, src_desc_0, src_0, 0.f, src_desc_0, src_cache);
     }
     // Let the output = 1 - input to simulate the behavior of neg.
     auto primitive = create_forward_primitive<::dnnl::eltwise_forward>(
