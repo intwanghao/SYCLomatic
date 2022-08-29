@@ -1469,7 +1469,7 @@ public:
   /// \param [in] saved_var Pointer to optional cache saved variance data in forward.
   /// \param [in] workspace Pointer to workspace used for backward propagation.
   /// \returns An event representing the batch normalization backward operations.
-  sycl::event engine_ext::batch_normalization_backward_ex(
+  sycl::event batch_normalization_backward_ex(
       batch_normalization_mode mode, batch_normalization_ops ops,
       activation_desc &adesc, float epsilon, float alpha_data,
       const memory_desc_ext &src_desc, void *src, const memory_desc_ext &dst_desc,
