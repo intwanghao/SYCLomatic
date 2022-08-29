@@ -2255,14 +2255,14 @@ sycl::event engine_ext::batch_normalization_forward_internal(
       }
     }
     float unbias_factor = element_num / (element_num - 1.f);
-    e = sum(factor * unbias_factor, scale_bias_mean_var_desc,
+    e = sum(factor * unbias_factor, mean_var_desc,
             reordered_saved_var ? reordered_saved_var : saved_var,
-            (1.f - factor), scale_bias_mean_var_desc, running_var);
+            (1.f - factor), mean_var_desc, running_var);
   }
   if (!is_infer && running_mean) {
-    e = sum(factor, scale_bias_mean_var_desc,
+    e = sum(factor, mean_var_desc,
             reordered_saved_mean ? reordered_saved_mean : saved_mean,
-            (1.f - factor), scale_bias_mean_var_desc, running_mean);
+            (1.f - factor), mean_var_desc, running_mean);
   }
   if (reordered_dst && (actual_dst_desc != dst_desc.get_desc())) {
     e = reorder(1.f, actual_dst_desc, reordered_dst, 0.f, dst_desc, dst);
