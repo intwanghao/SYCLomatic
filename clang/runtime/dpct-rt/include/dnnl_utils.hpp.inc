@@ -704,17 +704,17 @@ class engine_ext {
     return q->fill<T>(static_cast<T *>(src), *static_cast<const T *>(value),
                       size_with_byte / sizeof(T));
   }
+  template <typename T> struct no_zero_op {
+    T operator()(T e) {
+      if (!e) {
+        return 1;
+      }
+      return e;
+    }
+  };
   template <typename T>
   void transform_no_zero_with_type(sycl::queue *q, void *src, void *dst,
                                    size_t num) {
-    template <typename T> struct no_zero_op {
-      T operator()(T e) {
-        if (!e) {
-          return 1;
-        }
-        return e;
-      }
-    };
     std::transform(oneapi::dpl::execution::make_device_policy(*q),
                    static_cast<T *>(src), static_cast<T *>(src) + num,
                    static_cast<T *>(dst), no_zero_op<T>());
