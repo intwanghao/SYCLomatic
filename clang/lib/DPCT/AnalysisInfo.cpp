@@ -700,7 +700,7 @@ void DpctFileInfo::buildReplacements() {
     HeaderOS << "#include " << HeaderStr << getNL();
   }
   HeaderOS.flush();
-  insertHeader(std::move(InsertHeaderStr), LastIncludeOffset);
+  insertHeader(std::move(InsertHeaderStr), getLastIncludeOffset());
 
   std::string InsertHeaderStrCUDA;
   llvm::raw_string_ostream HeaderOSCUDA(InsertHeaderStrCUDA);
@@ -712,7 +712,7 @@ void DpctFileInfo::buildReplacements() {
     HeaderOSCUDA << getNL() << "#include " << HeaderStr;
   }
   HeaderOSCUDA.flush();
-  insertHeader(std::move(InsertHeaderStrCUDA), LastIncludeOffset, IP_Left,
+  insertHeader(std::move(InsertHeaderStrCUDA), getLastIncludeOffset(), IP_Left,
                RT_CUDAWithCodePin);
 
   FreeQueriesInfo::buildInfo();
@@ -813,17 +813,46 @@ bool DpctFileInfo::isInAnalysisScope() {
   return DpctGlobalInfo::isInAnalysisScope(FilePath);
 }
 void DpctFileInfo::setFileEnterOffset(unsigned Offset) {
-  if (!HasInclusionDirective) {
-    FirstIncludeOffset = Offset;
-    LastIncludeOffset = Offset;
+  auto MF = DpctGlobalInfo::getInstance().getMainFile();
+  if (MF) {
+    if (FirstIncludeOffsetMap.find(MF) == FirstIncludeOffsetMap.end()) {
+      FirstIncludeOffsetMap[MF] = Offset;
+    }
+    if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
+      LastIncludeOffsetMap[MF] = Offset;
+    }
   }
 }
 void DpctFileInfo::setFirstIncludeOffset(unsigned Offset) {
-  if (!HasInclusionDirective) {
-    FirstIncludeOffset = Offset;
-    LastIncludeOffset = Offset;
-    HasInclusionDirective = true;
+  auto MF = DpctGlobalInfo::getInstance().getMainFile();
+  if (MF) {
+    if (FirstIncludeOffsetMap.find(MF) == FirstIncludeOffsetMap.end()) {
+      FirstIncludeOffsetMap[MF] = Offset;
+    }
+    if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
+      LastIncludeOffsetMap[MF] = Offset;
+    }
   }
+}
+void DpctFileInfo::setLastIncludeOffset(unsigned Offset) {
+  auto MF = DpctGlobalInfo::getInstance().getMainFile();
+  if (MF) {
+    LastIncludeOffsetMap[MF] = Offset;
+  }
+}
+unsigned DpctFileInfo::getFirstIncludeOffset() {
+  auto MF = DpctGlobalInfo::getInstance().getMainFile();
+  if (MF) {
+    return FirstIncludeOffsetMap[MF];
+  }
+  return 0;
+}
+unsigned DpctFileInfo::getLastIncludeOffset() {
+  auto MF = DpctGlobalInfo::getInstance().getMainFile();
+  if (MF) {
+    return LastIncludeOffsetMap[MF];
+  }
+  return 0;
 }
 void DpctFileInfo::concatHeader(llvm::raw_string_ostream &OS) {}
 template <class FirstT, class... Args>
@@ -855,7 +884,7 @@ void DpctFileInfo::insertHeader(HeaderType Type, unsigned Offset,
     if (auto MF = DpctGlobalInfo::getInstance().getMainFile())
       if (this != MF.get())
         DpctGlobalInfo::getInstance().getMainFile()->insertHeader(
-            Type, FirstIncludeOffset);
+            Type, getFirstIncludeOffset());
   }
   if (HeaderInsertedBitMap[Type])
     return;
@@ -877,7 +906,7 @@ void DpctFileInfo::insertHeader(HeaderType Type, unsigned Offset,
   case HT_DPL_Algorithm:
   case HT_DPL_Execution:
     concatHeader(OS, getHeaderSpelling(Type));
-    return insertHeader(OS.str(), FirstIncludeOffset,
+    return insertHeader(OS.str(), getFirstIncludeOffset(),
                         InsertPosition::IP_AlwaysLeft);
   case HT_SYCL:
     // Add the label for profiling macro "DPCT_PROFILING_ENABLED", which will be
@@ -924,7 +953,7 @@ void DpctFileInfo::insertHeader(HeaderType Type, unsigned Offset,
            << DpctGlobalInfo::getGlobalQueueName() << ";" << getNL();
       }
     }
-    insertHeader(OS.str(), FirstIncludeOffset, InsertPosition::IP_Left);
+    insertHeader(OS.str(), getFirstIncludeOffset(), InsertPosition::IP_Left);
     if (!RTVersionValue.empty())
       MigratedMacroDefinitionOS << "#define DPCT_COMPAT_RT_VERSION "
                                 << RTVersionValue << getNL();
@@ -941,8 +970,8 @@ void DpctFileInfo::insertHeader(HeaderType Type, unsigned Offset,
                  InsertPosition::IP_AlwaysLeft);
     for (const auto &File :
          DpctGlobalInfo::getCustomHelperFunctionAddtionalIncludes()) {
-      insertHeader("#include \"" + File + +"\"" + getNL(), FirstIncludeOffset,
-                   InsertPosition::IP_Right);
+      insertHeader("#include \"" + File + +"\"" + getNL(),
+                   getFirstIncludeOffset(), InsertPosition::IP_Right);
     }
     return;
 
@@ -994,23 +1023,24 @@ void DpctFileInfo::insertHeader(HeaderType Type, unsigned Offset,
     }
     SchemaRelativePath += "codepin_autogen_util.hpp\"";
     concatHeader(OS, SchemaRelativePath);
-    return insertHeader(OS.str(), FirstIncludeOffset, InsertPosition::IP_Right,
-                        IsForCodePin);
+    return insertHeader(OS.str(), getFirstIncludeOffset(),
+                        InsertPosition::IP_Right, IsForCodePin);
   } break;
   default:
     break;
   }
 
-  if (Offset != FirstIncludeOffset)
+  if (Offset != getFirstIncludeOffset())
     OS << getNL();
   concatHeader(OS, getHeaderSpelling(Type));
-  return insertHeader(OS.str(), LastIncludeOffset, InsertPosition::IP_Right);
+  return insertHeader(OS.str(), getLastIncludeOffset(),
+                      InsertPosition::IP_Right);
 }
 void DpctFileInfo::insertHeader(HeaderType Type, ReplacementType IsForCodePin) {
   switch (Type) {
 #define HEADER(Name, Spelling)                                                 \
   case HT_##Name:                                                              \
-    return insertHeader(HT_##Name, LastIncludeOffset, IsForCodePin);
+    return insertHeader(HT_##Name, getLastIncludeOffset(), IsForCodePin);
 #include "HeaderTypes.inc"
   default:
     return;
