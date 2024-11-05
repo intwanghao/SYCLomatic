@@ -281,7 +281,10 @@ void IncludesCallbacks::MacroDefined(const Token &MacroNameTok,
 
     // The "__noinline__" macro is re-defined and it is used in
     // "__attribute__()", do not migrate it.
-    if (II->hasMacroDefinition() && (II->getName() == "__noinline__")) {
+    if ((GetSourceFileType(
+             DpctGlobalInfo::getInstance().getMainFile()->getFilePath()) ==
+         SPT_CppSource) &&
+        (II->getName() == "__noinline__")) {
       continue;
     }
 
@@ -6674,7 +6677,12 @@ void EventAPICallRule::runRule(const MatchFinder::MatchResult &Result) {
              FuncName == "cuEventSynchronize") {
     if(DpctGlobalInfo::getEnablepProfilingFlag()) {
       // Option '--enable-profiling' is enabled
-      std::string ReplStr{getStmtSpelling(CE->getArg(0))};
+      std::string ReplStr;
+      ExprAnalysis EA(CE->getArg(0));
+      ReplStr = EA.getReplacedString();
+      if (dyn_cast<CStyleCastExpr>(CE->getArg(0)->IgnoreImplicitAsWritten())) {
+        ReplStr = "(" + ReplStr + ")";
+      }
       ReplStr += "->wait_and_throw()";
       if (IsAssigned) {
         ReplStr = MapNames::getCheckErrorMacroName() + "(" + ReplStr + ")";
@@ -6684,7 +6692,12 @@ void EventAPICallRule::runRule(const MatchFinder::MatchResult &Result) {
     } else {
       // Option '--enable-profiling' is not enabled
       bool NeedReport = false;
-      std::string ReplStr{getStmtSpelling(CE->getArg(0))};
+      std::string ReplStr;
+      ExprAnalysis EA(CE->getArg(0));
+      ReplStr = EA.getReplacedString();
+      if (dyn_cast<CStyleCastExpr>(CE->getArg(0)->IgnoreImplicitAsWritten())) {
+        ReplStr = "(" + ReplStr + ")";
+      }
       ReplStr += "->wait_and_throw()";
       if (IsAssigned) {
         ReplStr = MapNames::getCheckErrorMacroName() + "(" + ReplStr + ")";
