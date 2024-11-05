@@ -821,7 +821,10 @@ void DpctFileInfo::setFileEnterOffset(unsigned Offset) {
     if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
       LastIncludeOffsetMap[MF] = Offset;
     }
+    return;
   }
+  FirstIncludeOffsetMap[nullptr] = Offset;
+  LastIncludeOffsetMap[nullptr] = Offset;
 }
 void DpctFileInfo::setFirstIncludeOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
@@ -832,27 +835,36 @@ void DpctFileInfo::setFirstIncludeOffset(unsigned Offset) {
     if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
       LastIncludeOffsetMap[MF] = Offset;
     }
+    return;
   }
+  FirstIncludeOffsetMap[nullptr] = Offset;
+  LastIncludeOffsetMap[nullptr] = Offset;
 }
 void DpctFileInfo::setLastIncludeOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
     LastIncludeOffsetMap[MF] = Offset;
+    return;
   }
+  LastIncludeOffsetMap[nullptr] = Offset;
 }
 unsigned DpctFileInfo::getFirstIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
+    std::cout << "getFirstIncludeOffset1" << std::endl;
     return FirstIncludeOffsetMap[MF];
   }
-  return 0;
+  std::cout << "getFirstIncludeOffset0" << std::endl;
+  return FirstIncludeOffsetMap.begin()->second;
 }
 unsigned DpctFileInfo::getLastIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
+    std::cout << "getFirstIncludeOffset1" << std::endl;
     return LastIncludeOffsetMap[MF];
   }
-  return 0;
+  std::cout << "getFirstIncludeOffset0" << std::endl;
+  return LastIncludeOffsetMap.begin()->second;
 }
 void DpctFileInfo::concatHeader(llvm::raw_string_ostream &OS) {}
 template <class FirstT, class... Args>
