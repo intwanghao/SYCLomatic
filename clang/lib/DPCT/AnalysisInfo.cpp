@@ -821,9 +821,9 @@ void DpctFileInfo::setFileEnterOffset(unsigned Offset) {
 }
 void DpctFileInfo::setFirstIncludeOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
-  if (MF) {
+  if (MF && !FirstIncludeOffsetInsertedSet.count(MF)) {
     FirstIncludeOffsetMap[MF] = Offset;
-    LastIncludeOffsetMap[MF] = Offset;
+    FirstIncludeOffsetInsertedSet.insert(MF);
   }
 }
 void DpctFileInfo::setLastIncludeOffset(unsigned Offset) {
@@ -834,15 +834,21 @@ void DpctFileInfo::setLastIncludeOffset(unsigned Offset) {
 }
 unsigned DpctFileInfo::getFirstIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
-  if (MF) {
+  if (MF && (FirstIncludeOffsetMap.find(MF) != FirstIncludeOffsetMap.end())) {
     return FirstIncludeOffsetMap[MF];
+  }
+  if (FirstIncludeOffsetMap.empty()) {
+    return 0;
   }
   return FirstIncludeOffsetMap.begin()->second;
 }
 unsigned DpctFileInfo::getLastIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
-  if (MF) {
+  if (MF && (LastIncludeOffsetMap.find(MF) != LastIncludeOffsetMap.end())) {
     return LastIncludeOffsetMap[MF];
+  }
+  if (LastIncludeOffsetMap.empty()) {
+    return 0;
   }
   return LastIncludeOffsetMap.begin()->second;
 }

@@ -589,6 +589,7 @@ private:
   std::string FileContentCache;
   std::map<std::shared_ptr<DpctFileInfo>, unsigned> FirstIncludeOffsetMap;
   std::map<std::shared_ptr<DpctFileInfo>, unsigned> LastIncludeOffsetMap;
+  std::set<std::shared_ptr<DpctFileInfo>> FirstIncludeOffsetInsertedSet;
   const unsigned FileBeginOffset = 0;
   std::vector<std::string> InsertedHeaders;
   std::vector<std::string> InsertedHeadersCUDA;
