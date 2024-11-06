@@ -815,55 +815,35 @@ bool DpctFileInfo::isInAnalysisScope() {
 void DpctFileInfo::setFileEnterOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
-    if (FirstIncludeOffsetMap.find(MF) == FirstIncludeOffsetMap.end()) {
-      FirstIncludeOffsetMap[MF] = Offset;
-    }
-    if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
-      LastIncludeOffsetMap[MF] = Offset;
-    }
-    return;
+    FirstIncludeOffsetMap[MF] = Offset;
+    LastIncludeOffsetMap[MF] = Offset;
   }
-  FirstIncludeOffsetMap[nullptr] = Offset;
-  LastIncludeOffsetMap[nullptr] = Offset;
 }
 void DpctFileInfo::setFirstIncludeOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
-    if (FirstIncludeOffsetMap.find(MF) == FirstIncludeOffsetMap.end()) {
-      FirstIncludeOffsetMap[MF] = Offset;
-    }
-    if (LastIncludeOffsetMap.find(MF) == LastIncludeOffsetMap.end()) {
-      LastIncludeOffsetMap[MF] = Offset;
-    }
-    return;
+    FirstIncludeOffsetMap[MF] = Offset;
+    LastIncludeOffsetMap[MF] = Offset;
   }
-  FirstIncludeOffsetMap[nullptr] = Offset;
-  LastIncludeOffsetMap[nullptr] = Offset;
 }
 void DpctFileInfo::setLastIncludeOffset(unsigned Offset) {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
     LastIncludeOffsetMap[MF] = Offset;
-    return;
   }
-  LastIncludeOffsetMap[nullptr] = Offset;
 }
 unsigned DpctFileInfo::getFirstIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
-    std::cout << "getFirstIncludeOffset1" << std::endl;
     return FirstIncludeOffsetMap[MF];
   }
-  std::cout << "getFirstIncludeOffset0" << std::endl;
   return FirstIncludeOffsetMap.begin()->second;
 }
 unsigned DpctFileInfo::getLastIncludeOffset() {
   auto MF = DpctGlobalInfo::getInstance().getMainFile();
   if (MF) {
-    std::cout << "getFirstIncludeOffset1" << std::endl;
     return LastIncludeOffsetMap[MF];
   }
-  std::cout << "getFirstIncludeOffset0" << std::endl;
   return LastIncludeOffsetMap.begin()->second;
 }
 void DpctFileInfo::concatHeader(llvm::raw_string_ostream &OS) {}
